@@ -159,7 +159,7 @@ namespace Content.MapRenderer.Painters
             var sMapManager = server.ResolveDependency<IMapManager>();
 
             using var tilePainter = new TilePainter(client, server);
-            var entityPainter = new GridPainter(client, server);
+            using var entityPainter = new GridPainter(client, server);
             var xformQuery = sEntityManager.GetEntityQuery<TransformComponent>();
             var xformSystem = sEntityManager.System<SharedTransformSystem>();
 
