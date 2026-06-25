@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Content.Shared.Decals;
@@ -16,7 +14,7 @@ using static Robust.UnitTesting.RobustIntegrationTest;
 
 namespace Content.MapRenderer.Painters
 {
-    public sealed class GridPainter
+    public sealed class GridPainter : IDisposable
     {
         private readonly EntityPainter _entityPainter;
         private readonly DecalPainter _decalPainter;
@@ -24,9 +22,7 @@ namespace Content.MapRenderer.Painters
         private readonly IEntityManager _cEntityManager;
 
         private readonly IEntityManager _sEntityManager;
-        private readonly IMapManager _sMapManager;
-
-        private readonly ConcurrentDictionary<EntityUid, List<EntityData>> _entities;
+        private readonly Dictionary<EntityUid, List<EntityData>> _entities;
         private readonly Dictionary<EntityUid, List<DecalData>> _decals;
 
         public GridPainter(ClientIntegrationInstance client, ServerIntegrationInstance server)
@@ -37,7 +33,6 @@ namespace Content.MapRenderer.Painters
             _cEntityManager = client.ResolveDependency<IEntityManager>();
 
             _sEntityManager = server.ResolveDependency<IEntityManager>();
-            _sMapManager = server.ResolveDependency<IMapManager>();
 
             _entities = GetEntities();
             _decals = GetDecals();
@@ -63,12 +58,19 @@ namespace Content.MapRenderer.Painters
             Console.WriteLine($"{nameof(GridPainter)} painted grid {gridUid} in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
         }
 
-        private ConcurrentDictionary<EntityUid, List<EntityData>> GetEntities()
+        public void Dispose()
+        {
+            _entityPainter.Dispose();
+            _decalPainter.Dispose();
+        }
+
+        private Dictionary<EntityUid, List<EntityData>> GetEntities()
         {
             var stopwatch = new Stopwatch();
             stopwatch.Start();
 
-            var components = new ConcurrentDictionary<EntityUid, List<EntityData>>();
+            var components = new Dictionary<EntityUid, List<EntityData>>();
+            var entityCount = 0;
 
             foreach (var serverEntity in _sEntityManager.GetEntities())
             {
@@ -92,11 +94,12 @@ namespace Content.MapRenderer.Painters
                     var (x, y) = TransformLocalPosition(position, grid);
                     var data = new EntityData(serverEntity, sprite, x, y);
 
-                    components.GetOrAdd(transform.GridUid.Value, _ => new List<EntityData>()).Add(data);
+                    components.GetOrNew(transform.GridUid.Value).Add(data);
+                    entityCount++;
                 }
             }
 
-            Console.WriteLine($"Found {components.Values.Sum(l => l.Count)} entities on {components.Count} grids in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
+            Console.WriteLine($"Found {entityCount} entities on {components.Count} grids in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
 
             return components;
         }
@@ -107,6 +110,7 @@ namespace Content.MapRenderer.Painters
             stopwatch.Start();
 
             var decals = new Dictionary<EntityUid, List<DecalData>>();
+            var decalCount = 0;
             var query = _sEntityManager.AllEntityQueryEnumerator<MapGridComponent>();
 
             while (query.MoveNext(out var uid, out var grid))
@@ -123,12 +127,13 @@ namespace Content.MapRenderer.Painters
                         {
                             var (x, y) = TransformLocalPosition(decal.Coordinates, grid);
                             decals.GetOrNew(uid).Add(new DecalData(decal, x, y));
+                            decalCount++;
                         }
                     }
                 }
             }
 
-            Console.WriteLine($"Found {decals.Values.Sum(l => l.Count)} decals on {decals.Count} grids in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
+            Console.WriteLine($"Found {decalCount} decals on {decals.Count} grids in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
             return decals;
         }
 

@@ -17,13 +17,17 @@ using static Robust.UnitTesting.RobustIntegrationTest;
 
 namespace Content.MapRenderer.Painters;
 
-public sealed class DecalPainter
+public sealed class DecalPainter : IDisposable
 {
+    private static readonly Comparer<DecalData> ZIndexComparer = Comparer<DecalData>.Create(
+        (x, y) => x.Decal.ZIndex.CompareTo(y.Decal.ZIndex));
+
     private readonly IResourceManager _resManager;
 
     private readonly IPrototypeManager _sPrototypeManager;
 
     private readonly Dictionary<string, SpriteSpecifier> _decalTextures = new();
+    private readonly Dictionary<string, Image> _decalImages = new();
 
     public DecalPainter(ClientIntegrationInstance client, ServerIntegrationInstance server)
     {
@@ -36,7 +40,7 @@ public sealed class DecalPainter
         var stopwatch = new Stopwatch();
         stopwatch.Start();
 
-        decals.Sort(Comparer<DecalData>.Create((x, y) => x.Decal.ZIndex.CompareTo(y.Decal.ZIndex)));
+        decals.Sort(ZIndexComparer);
 
         if (_decalTextures.Count == 0)
         {
@@ -63,31 +67,41 @@ public sealed class DecalPainter
             return;
         }
 
-        Stream stream;
-        if (sprite is SpriteSpecifier.Texture texture)
+        if (!_decalImages.TryGetValue(decal.Id, out var baseImage))
         {
-            stream = _resManager.ContentFileRead(texture.TexturePath);
-        }
-        else if (sprite is SpriteSpecifier.Rsi rsi)
-        {
-            var path = $"{rsi.RsiPath}/{rsi.RsiState}.png";
-            if (!path.StartsWith("/Textures"))
+            Stream stream;
+            if (sprite is SpriteSpecifier.Texture texture)
             {
-                path = $"/Textures/{path}";
+                stream = _resManager.ContentFileRead(texture.TexturePath);
+            }
+            else if (sprite is SpriteSpecifier.Rsi rsi)
+            {
+                var path = $"{rsi.RsiPath}/{rsi.RsiState}.png";
+                if (!path.StartsWith("/Textures"))
+                {
+                    path = $"/Textures/{path}";
+                }
+
+                stream = _resManager.ContentFileRead(path);
+            }
+            else
+            {
+                // Don't support
+                return;
             }
 
-            stream = _resManager.ContentFileRead(path);
-        }
-        else
-        {
-            // Don't support
-            return;
+            using (stream)
+            {
+                baseImage = Image.Load<Rgba32>(stream);
+            }
+
+            _decalImages.Add(decal.Id, baseImage);
         }
 
-        var image = Image.Load<Rgba32>(stream);
+        using var image = baseImage.CloneAs<Rgba32>();
 
         image.Mutate(o => o.Rotate((float) -decal.Angle.Degrees));
-        var coloredImage = new Image<Rgba32>(image.Width, image.Height);
+        using var coloredImage = new Image<Rgba32>(image.Width, image.Height);
         Color color = decal.Color?.WithAlpha(byte.MaxValue).ConvertImgSharp() ?? Color.White; // remove the encoded color alpha here
         var alpha = decal.Color?.A ?? 1; // get the alpha separately so we can use it in DrawImage
         coloredImage.Mutate(o => o.BackgroundColor(color));
@@ -101,5 +115,13 @@ public sealed class DecalPainter
 
         // Woohoo!
         canvas.Mutate(o => o.DrawImage(image, new Point(pointX, pointY), alpha));
+    }
+
+    public void Dispose()
+    {
+        foreach (var image in _decalImages.Values)
+        {
+            image.Dispose();
+        }
     }
 }
