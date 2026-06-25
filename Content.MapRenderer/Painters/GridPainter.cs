@@ -74,13 +74,18 @@ namespace Content.MapRenderer.Painters
 
             foreach (var serverEntity in _sEntityManager.GetEntities())
             {
-                var clientEntity = _cEntityManager.GetEntity(_sEntityManager.GetNetEntity(serverEntity));
+                if (!_sEntityManager.TryGetComponent(serverEntity, out MetaDataComponent? server))
+                {
+                    continue;
+                }
+
+                var clientEntity = _cEntityManager.GetEntity(_sEntityManager.GetNetEntity(serverEntity, server));
                 if (!_cEntityManager.TryGetComponent(clientEntity, out SpriteComponent? sprite))
                 {
                     continue;
                 }
 
-                var prototype = _sEntityManager.GetComponent<MetaDataComponent>(serverEntity).EntityPrototype;
+                var prototype = server.EntityPrototype;
                 if (prototype == null)
                 {
                     continue;
