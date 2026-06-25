@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 using Robust.Client.Graphics;
 using Robust.Client.ResourceManagement;
 using Robust.Shared.ContentPack;
@@ -16,13 +17,14 @@ using static Robust.UnitTesting.RobustIntegrationTest;
 
 namespace Content.MapRenderer.Painters
 {
-    public sealed class TilePainter
+    public sealed class TilePainter : IDisposable
     {
         public const int TileImageSize = EyeManager.PixelsPerMeter;
 
         private readonly ITileDefinitionManager _sTileDefinitionManager;
         private readonly SharedMapSystem _sMapSystem;
         private readonly IResourceManager _resManager;
+        private readonly Dictionary<int, Dictionary<string, List<Image[]>>> _tileImageCache = new();
 
         public TilePainter(ClientIntegrationInstance client, ServerIntegrationInstance server)
         {
@@ -42,7 +44,7 @@ namespace Content.MapRenderer.Painters
             var yOffset = -bounds.Bottom;
             var tileSize = grid.TileSize * TileImageSize;
 
-            var images = GetTileImages(_sTileDefinitionManager, _resManager, tileSize);
+            var images = GetTileImages(tileSize);
             var i = 0;
 
             _sMapSystem.GetAllTiles(gridUid, grid).AsParallel().ForAll(tile =>
@@ -54,57 +56,54 @@ namespace Content.MapRenderer.Painters
 
                 var x = (int) (tile.X + xOffset + customOffset.X);
                 var y = (int) (tile.Y + yOffset + customOffset.Y);
-                var image = images[path][tile.Tile.Variant].CloneAs<Rgba32>();
-
-                switch (tile.Tile.RotationMirroring % 4)
-                {
-                    case 0:
-                        break;
-                    case 1:
-                        image.Mutate(o => o.Rotate(90f));
-                        break;
-                    case 2:
-                        image.Mutate(o => o.Rotate(180f));
-                        break;
-                    case 3:
-                        image.Mutate(o => o.Rotate(270f));
-                        break;
-                }
-
-                if (tile.Tile.RotationMirroring > 3)
-                {
-                    image.Mutate(o => o.Flip(FlipMode.Horizontal));
-                }
+                var image = images[path][tile.Tile.Variant][tile.Tile.RotationMirroring % 8];
 
                 gridCanvas.Mutate(o => o.DrawImage(image, new Point(x * tileSize, y * tileSize), 1));
 
-                i++;
+                Interlocked.Increment(ref i);
             });
 
             Console.WriteLine($"{nameof(TilePainter)} painted {i} tiles on grid {gridUid} in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
         }
 
-        private Dictionary<string, List<Image>> GetTileImages(
-            ITileDefinitionManager tileDefinitionManager,
-            IResourceManager resManager,
-            int tileSize)
+        public void Dispose()
         {
+            foreach (var cache in _tileImageCache.Values)
+            {
+                foreach (var images in cache.Values)
+                {
+                    foreach (var variants in images)
+                    {
+                        foreach (var image in variants)
+                        {
+                            image.Dispose();
+                        }
+                    }
+                }
+            }
+        }
+
+        private Dictionary<string, List<Image[]>> GetTileImages(int tileSize)
+        {
+            if (_tileImageCache.TryGetValue(tileSize, out var cached))
+                return cached;
+
             var stopwatch = new Stopwatch();
             stopwatch.Start();
 
-            var images = new Dictionary<string, List<Image>>();
+            var images = new Dictionary<string, List<Image[]>>();
 
-            foreach (var definition in tileDefinitionManager)
+            foreach (var definition in _sTileDefinitionManager)
             {
                 var path = definition.Sprite.ToString();
 
                 if (string.IsNullOrWhiteSpace(path))
                     continue;
 
-                images[path] = new List<Image>(definition.Variants);
+                images[path] = new List<Image[]>(definition.Variants);
 
-                using var stream = resManager.ContentFileRead(path);
-                Image tileSheet = Image.Load<Rgba32>(stream);
+                using var stream = _resManager.ContentFileRead(path);
+                using Image tileSheet = Image.Load<Rgba32>(stream);
 
                 if (tileSheet.Width != tileSize * definition.Variants || tileSheet.Height != tileSize)
                 {
@@ -114,14 +113,30 @@ namespace Content.MapRenderer.Painters
                 for (var i = 0; i < definition.Variants; i++)
                 {
                     var index = i;
-                    var tileImage = tileSheet.Clone(o => o.Crop(new Rectangle(tileSize * index, 0, 32, 32)).Flip(FlipMode.Vertical));
-                    images[path].Add(tileImage);
+                    using var tileImage = tileSheet.Clone(o => o.Crop(new Rectangle(tileSize * index, 0, tileSize, tileSize)).Flip(FlipMode.Vertical));
+                    images[path].Add(CreateTileVariants(tileImage));
                 }
             }
 
             Console.WriteLine($"Indexed all tile images in {(int) stopwatch.Elapsed.TotalMilliseconds} ms");
 
+            _tileImageCache.Add(tileSize, images);
             return images;
+        }
+
+        private static Image[] CreateTileVariants(Image source)
+        {
+            var variants = new Image[8];
+            variants[0] = source.CloneAs<Rgba32>();
+            variants[1] = source.Clone(o => o.Rotate(90f));
+            variants[2] = source.Clone(o => o.Rotate(180f));
+            variants[3] = source.Clone(o => o.Rotate(270f));
+            variants[4] = source.Clone(o => o.Flip(FlipMode.Horizontal));
+            variants[5] = source.Clone(o => o.Rotate(90f).Flip(FlipMode.Horizontal));
+            variants[6] = source.Clone(o => o.Rotate(180f).Flip(FlipMode.Horizontal));
+            variants[7] = source.Clone(o => o.Rotate(270f).Flip(FlipMode.Horizontal));
+
+            return variants;
         }
     }
 }

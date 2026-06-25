@@ -158,7 +158,7 @@ namespace Content.MapRenderer.Painters
 
             var sMapManager = server.ResolveDependency<IMapManager>();
 
-            var tilePainter = new TilePainter(client, server);
+            using var tilePainter = new TilePainter(client, server);
             var entityPainter = new GridPainter(client, server);
             var xformQuery = sEntityManager.GetEntityQuery<TransformComponent>();
             var xformSystem = sEntityManager.System<SharedTransformSystem>();
@@ -190,22 +190,33 @@ namespace Content.MapRenderer.Painters
 
             foreach (var (uid, grid) in _grids)
             {
-                var tiles = mapSys.GetAllTiles(uid, grid).ToList();
-                if (tiles.Count == 0)
+                var tileCount = 0;
+                var minX = int.MaxValue;
+                var minY = int.MaxValue;
+                var maxX = int.MinValue;
+                var maxY = int.MinValue;
+
+                foreach (var tile in mapSys.GetAllTiles(uid, grid))
+                {
+                    tileCount++;
+                    minX = Math.Min(minX, tile.X);
+                    minY = Math.Min(minY, tile.Y);
+                    maxX = Math.Max(maxX, tile.X);
+                    maxY = Math.Max(maxY, tile.Y);
+                }
+
+                if (tileCount == 0)
                 {
                     Console.WriteLine($"Warning: Grid {uid} was empty. Skipping image rendering.");
                     continue;
                 }
+
                 var tileXSize = grid.TileSize * TilePainter.TileImageSize;
                 var tileYSize = grid.TileSize * TilePainter.TileImageSize;
 
-                var minX = tiles.Min(t => t.X);
-                var minY = tiles.Min(t => t.Y);
-                var maxX = tiles.Max(t => t.X);
-                var maxY = tiles.Max(t => t.Y);
                 var w = (maxX - minX + 1) * tileXSize;
                 var h = (maxY - minY + 1) * tileYSize;
-                var customOffset = new Vector2();
+                var customOffset = Vector2.Zero;
 
                 //MapGrids don't have LocalAABB, so we offset them to align the bottom left corner with 0,0 coordinates
                 if (grid.LocalAABB.IsEmpty())
@@ -213,13 +224,21 @@ namespace Content.MapRenderer.Painters
 
                 var gridCanvas = new Image<Rgba32>(w, h);
 
-                await server.WaitPost(() =>
+                try
                 {
-                    tilePainter.Run(gridCanvas, uid, grid, customOffset);
-                    entityPainter.Run(gridCanvas, uid, grid, customOffset);
+                    await server.WaitPost(() =>
+                    {
+                        tilePainter.Run(gridCanvas, uid, grid, customOffset);
+                        entityPainter.Run(gridCanvas, uid, grid, customOffset);
 
-                    gridCanvas.Mutate(e => e.Flip(FlipMode.Vertical));
-                });
+                        gridCanvas.Mutate(e => e.Flip(FlipMode.Vertical));
+                    });
+                }
+                catch
+                {
+                    gridCanvas.Dispose();
+                    throw;
+                }
 
                 var renderedImage = new RenderedGridImage<Rgba32>(gridCanvas)
                 {
